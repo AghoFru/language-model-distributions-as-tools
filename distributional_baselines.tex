@@ -1,0 +1,896 @@
+\documentclass[11pt]{article}
+\usepackage[preprint]{acl}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{microtype}
+\hypersetup{
+  pdftitle={Language-Model Distributions as Tools for Computational Linguistics},
+  pdfauthor={Akufor Agho Fru}
+}
+
+\title{Language-Model Distributions as Tools for Computational Linguistics}
+\author{Akufor Agho Fru}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Computational linguistics uses probability distributions to rank documents,
+identify languages, and describe lexical behavior. I test when
+language-model distributions help these tools, against matched counts and
+against the standard baselines for each task. The answer is mostly no. In
+query-likelihood retrieval, a hybrid of DistilGPT-2 word probabilities and
+counts beats a background estimated from only 1,000 sampled tokens (SciFact
+nDCG@10 .650 versus .599). That setting is artificial, because query
+likelihood already reads the full collection. The gain disappears at larger
+budgets, and the standard baselines score higher on SciFact: collection
+Dirichlet smoothing reaches .659 and BM25 .663, although a paired test of BM25
+against the hybrid is not significant. LM-derived IDF and LM-based stop words do not beat
+BM25. For Bosnian/Croatian and Indonesian/Malay identification, a causal model
+trained from scratch reaches 77.94\% raw accuracy, against 76.24\% for a
+unigram that shares its subword tokenizer and 82.19\% for GlotLID-M. On
+Indonesian/Malay the raw unigram is better (92.59\% versus 89.67\%). After a
+post-hoc development calibration, the causal model beats the unigram by 2.03
+points and a post-hoc character 1-5 gram naive Bayes control by 2.47 points,
+but GlotLID-M stays best (86.34\%). Stylometry and distinctive-term classification show no
+reliable gain. The gains in next-word prediction and EIFFEL idiom completion align with
+the language-modeling objective.
+They show cloze ability, not linguistic utility beyond it. The dative result
+failed its registered standalone test and passed only a post-hoc additive
+test, consistent with Hawkins et al.\ (2020). Language-model
+distributions are candidate measurements to test against task baselines, not
+replacements for them.
+\end{abstract}
+
+\section{Introduction}
+
+Many computational-linguistics tools need a distribution over words: a
+background for retrieval smoothing, a reference rate for stylometry, a prior
+for spelling correction, or a likelihood for language identification. Large
+language models now give cheap estimates of such distributions. A natural
+question is whether these estimates make the tools better than the counts and
+baselines they would replace.
+
+I answer this question with saved evaluations across retrieval, language
+identification, stylometry, lexical distinctiveness, next-word prediction,
+spelling correction, stop-word selection, existing human-judgment datasets,
+and lexical distributional laws. The studies use
+different models, corpora, and designs. I report each one as a separate
+evidence block and do not pool their metrics. Three research questions
+organize the evidence:
+
+\begin{description}
+\item[RQ1] Does a frozen language-model word distribution improve retrieval,
+stylometry, and lexical tasks over matched empirical counts and over the
+standard baselines for each task?
+\item[RQ2] Does a contextual model improve close-language identification over
+a matched subword unigram, a character n-gram model, and released
+identifiers?
+\item[RQ3] Do language-model probabilities add value on existing human-judgment
+data, and does any gain go beyond the language-modeling objective?
+\end{description}
+
+The answer is conditional and mostly negative. An interpolated prior helps
+retrieval only when the empirical background is very sparse, and the standard
+retrieval baselines remain as good or better. In the planned raw evaluation, a
+contextual classifier is mixed against a matched unigram and trails GlotLID-M.
+After a post-hoc calibration, it beats the unigram and a post-hoc character
+n-gram control, but still trails GlotLID-M. The
+positive human-judgment results align with the cloze-style training
+objective or repeat known findings.
+
+The contributions are:
+\begin{enumerate}
+\item A matched comparison of frozen language-model word priors with sampled
+counts at several data budgets, with the standard retrieval baselines reported
+next to them.
+\item A close-language identification comparison with raw results and a
+post-hoc calibrated analysis, which adds a character n-gram control, so the
+contextual gain is not measured only against a baseline that shares the
+model's tokenizer.
+\item Evidence that confirms the framing of \citet{trott2026distributional}
+across several tasks. Gains appear where the task matches the training
+objective, such as next-word prediction and idiom completion, and not where
+the task needs more than the objective. This separation is not new.
+\end{enumerate}
+This is an evidence synthesis, not a new estimator. I make no claim that
+language models replace empirical distributions.
+
+\section{Related Work}
+
+\paragraph{Smoothing and retrieval.} Query-likelihood retrieval ranks a
+document by the probability of the query under a document language model
+\citep{pontecroft1998}, and translation models extend it with word-to-word
+probabilities \citep{bergerlafferty1999}. Unigram smoothing is central to this
+approach. \citet{zhai2004smoothing} showed that the background
+distribution and its parameters affect query-likelihood performance, so
+interpolating counts with a background is a standard construction. BM25 is the
+standard lexical baseline \citep{robertson2009bm25}. Neural language models
+already improve lexical retrieval in stronger ways than a frozen background
+prior. DeepCT learns contextual term weights \citep{daicallan2020deepct},
+SPLADE learns sparse lexical expansions \citep{formal2021splade}, and
+doc2query expands documents with predicted queries
+\citep{nogueira2019doc2query}. \citet{dossantos2020beyond} rank passages by the
+likelihood a GPT-2 model gives to the query, and \citet{zhuang2023} use
+open-source LLMs as zero-shot query-likelihood models. My retrieval test is narrower.
+It replaces only the background distribution of a Dirichlet query-likelihood
+model with frozen word probabilities and asks whether that helps at small
+reference budgets. I do not compare with these neural rankers.
+
+\paragraph{Stylometry and lexical statistics.} Word-based authorship methods
+compare observed frequencies with corpus statistics, as in Burrows's Delta
+\citep{hoover2004testing}. \citet{eder2022boosting} showed that changing the
+normalization denominator can improve attribution, and
+\citet{peng2003authorship} attributed authors with character-level n-gram
+language models. Frequency adjustment and
+prior-based comparison are therefore not new. \citet{barlas2020crossdomain} used pretrained language models for
+cross-domain attribution, and \citet{huang2025perplexity}
+fine-tune one authorial language model per candidate. My stylometry study
+instead uses one frozen global model as an external word prior. Informative
+Dirichlet log odds is an established way to rank distinctive words
+\citep{monroe2008fightin}. PMI and the t-score are standard association
+baselines \citep{bouma2010collocation}. Human-judged collocation resources
+exist \citep{kilgarriff2014collocation,collocaid2021}, but I could not use them
+here. The first has no reuse terms I could verify, and the second has no
+candidate-level negative judgments. I therefore use held-out next-word
+prediction, which is a different task. Noisy-channel spelling correction
+combines a candidate prior with an error channel \citep{brillmoore2000}.
+
+\paragraph{Language models as baselines and estimators.} Language-model
+probabilities have long served as measurements in psycholinguistics. Surprisal
+theory links word probability to processing difficulty
+\citep{hale2001earley,levy2008expectation}. Reading times grow with surprisal
+\citep{smithlevy2013logarithmic,shain2024logarithmic}. Better language models
+gave better reading-time fits up to a point
+\citep{goodkind2018surprisal,wilcox2020predictive}, but larger transformers
+fit worse \citep{ohschuler2023surprisal}. So better word prediction does not
+always give a better measurement, which is also what my cross-entropy results
+show. \citet{trott2026distributional} use LLMs as a confound control in
+psycholinguistics. The model tests whether a human behavior could arise from
+distributional exposure alone. In this framing, an LLM shows what
+distributional statistics can achieve on a task. My third contribution fits
+this framing: gains on objective-aligned tasks show what next-word statistics
+can do, not a further linguistic ability.
+\citet{zhong2025ratings} compare prompted LLM
+ratings with human ratings and corpus measures. LM perplexity also tracks
+learner proficiency. It falls as CEFR level rises in Swedish learner essays
+\citep{munozsanchez2024perplexity}, and LLM perplexity features classify CEFR
+levels across learner corpora \citep{stearns2026cefr}. My MERLIN pilot tests
+the same idea on German learner texts. \citet{hawkins2020dais}
+introduced the DAIS dative-alternation dataset and showed that neural
+language-model probabilities predict human dative preferences. My dative pilot
+repeats that test with newer models. Word probabilities from subword models
+need a token-boundary correction, and I use the one of
+\citet{pimentel2024word}. \citet{nguyenarehalli2026tokenizer} show that BPE
+vocabulary size changes surprisal estimates, so the tokenizer is part of the
+measurement.
+
+\paragraph{Language identification.} Character n-gram models are the classical
+approach to language identification \citep{cavnar1994ngram,dunning1994statistical},
+as a survey of the field describes \citep{jauhiainen2019survey}.
+Shared tasks on similar languages include Bosnian/Croatian/Serbian and
+Indonesian/Malay \citep{zampieri2014dsl}. In the third DSL shared task, systems
+built on character n-grams with SVMs, logistic regression, or n-gram language
+models won, and neural entries were not competitive \citep{malmasi2016dsl}.
+In that task, a character 7-gram language model reached 88.45\% accuracy and a
+character convolutional LSTM 78.45\% \citep{cianflone2016ngram}.
+Perplexity-based identification of similar languages is established
+\citep{gamallo2017perplexity}. UniLID identifies languages from tokenizer
+unigram distributions \citep{meister2026unilid}, so the matched subword
+unigram in my study is a UniLID-style classifier. Released identifiers include
+fastText lid.176 \citep{joulin2017bag,joulin2016fasttextzip}, GlotLID-M
+\citep{kargaran2023glotlid}, and OpenLID \citep{burchell2023openlid}.
+OpenLID-v3 targets closely related languages, including
+Bosnian/Croatian/Serbian \citep{fedorova2026openlidv3}. I did not evaluate
+OpenLID or OpenLID-v3.
+
+\paragraph{Statistical laws.} Quantitative laws of word use predate language
+models. \citet{takahashi2017neural,takahashi2019scaling} already measured
+Zipf, Heaps, and long-range scaling properties in neural language models and
+their generated text. \citet{mikhaylovskiy2025zipf} measured Zipf and Heaps
+behavior in LLM-generated text across temperature settings. Statistical
+accounts of Zipf remain contested, and an absolute fit needs explicit model
+comparison and goodness-of-fit tests \citep{piantadosi2014zipf,clauset2009powerlaw}.
+\citet{kobayashi2018taylor} studied Taylor scaling in linguistic sequences.
+My law measurements therefore describe two small models and two domains. They
+make no new claim about Zipf, Heaps, Taylor, or temperature effects.
+
+\section{Data, Models, and Licenses}
+
+Table~\ref{tab:data} lists every dataset and model used in the evidence
+blocks, with its source and license. I used each resource for research only
+and do not redistribute dataset text with this paper. EIFFEL and MERLIN are licensed CC BY-SA 4.0, and FLORES-200 is CC BY-SA
+4.0. I attribute them here and in the run records. Any derived data released
+from these sources will use the same license. The Blog Authorship Corpus is
+used under its noncommercial research terms. BEIR redistributes SciFact,
+NFCorpus, and FiQA but does not grant upstream rights, so the table gives the
+terms of each original source. NFCorpus is free for academic use only, and
+the FiQA question and answer data are for noncommercial use only.
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{p{4.2cm}p{5.4cm}p{4.6cm}}
+\toprule
+Resource & Use in this paper & License \\
+\midrule
+SciFact \citep{wadden2020scifact}, via BEIR \citep{thakur2021beir}
+ & Retrieval, LM-IDF, and stop-word studies
+ & Claims CC BY 4.0, abstracts ODC-By 1.0 \\
+NFCorpus \citep{boteva2016nfcorpus}, via BEIR
+ & Retrieval, LM-IDF, and stop-word studies
+ & Free for academic use only \\
+FiQA-2018 \citep{maia2018fiqa}, via BEIR
+ & LM-IDF and stop-word studies
+ & QA data noncommercial use only \\
+WikiText-103 and WikiText-2 \citep{merity2017pointer}
+ & LM contexts, empirical background, lexical laws
+ & CC BY-SA 3.0 and GFDL \\
+Blog Authorship Corpus \citep{schler2006effects,blogcorpus}
+ & Stylometry, distinctive terms
+ & Noncommercial research use \\
+Project Gutenberg novels \citep{gutenberg}
+ & Stylometry, next-word, spelling, lexical laws
+ & Public domain in the USA \\
+DAIS \citep{hawkins2020dais}
+ & Dative-preference pilot
+ & CC BY 4.0 \\
+EIFFEL \citep{eiffel,eiffeldata}
+ & French idiom-completion pilot
+ & CC BY-SA 4.0 \\
+MERLIN \citep{merlin2014,merlindata}
+ & German learner proficiency pilot
+ & CC BY-SA 4.0 \\
+SWORDS \citep{lee2021swords}
+ & Lexical-substitution pilot
+ & CC BY 3.0 US \\
+French Lexical Network idiomaticity data \citep{liu2024idiom,fln}
+ & Idiomaticity-class pilot
+ & CC BY 4.0 \\
+FLORES-200 \citep{nllb2022,goyal2022flores}
+ & Language-identification dev and devtest
+ & CC BY-SA 4.0 \\
+Bosnian, Croatian, Indonesian, and Malay Wikipedia, 2023-11-01 \citep{wikimedia2023}
+ & Language-identification training text
+ & CC BY-SA 3.0 and GFDL \\
+\midrule
+DistilGPT-2 \citep{sanh2019distilbert,distilgpt2}
+ & Frozen word priors, LM-IDF, lexical laws
+ & Apache-2.0 \\
+GPT-2 \citep{radford2019gpt2}
+ & Lexical laws
+ & MIT \\
+Qwen3.5-2B-Base and Qwen3.5-4B-Base \citep{qwen35}
+ & Human-judgment pilots
+ & Apache-2.0 \\
+fastText lid.176 \citep{joulin2017bag}
+ & Language-identification comparator
+ & CC BY-SA 3.0 \\
+GlotLID-M \citep{kargaran2023glotlid}
+ & Language-identification comparator
+ & Apache-2.0 plus notices \\
+\bottomrule
+\end{tabular}
+\caption{Datasets and models, their use, and their licenses as stated by the
+official source. Model revisions and dataset checksums are in the run
+records.}
+\label{tab:data}
+\end{table*}
+
+\section{Statistical Framework}
+
+\paragraph{Shared prior construction.} Let $V$ be the fixed evaluation
+vocabulary, $c_w$ the count of word $w$ in the task's reference sample, and
+$q_{\mathrm{LM}}$ the frozen model's word probability normalized over $V$.
+I compare the empirical distribution $q_E(w)=c_w/\sum_{v\in V}c_v$, the
+language-model distribution $q_{\mathrm{LM}}$, and the hybrid
+\begin{equation}
+ q_H(w)=\frac{c_w+\beta q_{\mathrm{LM}}(w)}
+ {\sum_{v\in V}c_v+\beta}.
+\end{equation}
+When a reference sample has zero counts for vocabulary items, empirical
+probabilities use a $0.5$ additive count before normalization. The hybrid's
+mixing mass $\beta$ and downstream smoothing parameters are selected on
+training or development data only.
+
+I use the frozen DistilGPT-2 checkpoint \citep{sanh2019distilbert,distilgpt2}
+at a pinned revision recorded in run metadata. For context set $C$,
+$q_{\mathrm{LM}}(w)$ is the normalized mean of boundary-corrected whole-word
+probabilities, $|C|^{-1}\sum_{c\in C}P_{\mathrm{LM}}(w\mid c)$. I average over
+32 independent WikiText-103 test contexts \citep{merity2017pointer}. The
+context sample is independent of all task references. The fixed vocabulary
+contains 300 shared stylometry features, retrieval query words, the blog
+reference vocabulary, or the 20,000 most frequent novel reference words,
+depending on task. Vocabulary construction uses no test labels or test
+relevance judgments. Pair probabilities are normalized over each fixed
+candidate set. Word priors are normalized over their task vocabulary, and
+spelling posteriors are normalized across each case's candidate list.
+
+\paragraph{Stylometry.} I use 1,000-token samples from the Blog Authorship
+Corpus \citep{schler2006effects} and public-domain novels from Project
+Gutenberg. Query documents and known-author references are disjoint texts from
+the same author set. For each corpus, I estimate $q_E$ from a random sample of
+1,000, 10,000, or 100,000 reference tokens using seeds 17, 29, and 43, where
+feasible. I also evaluate a single full-reference estimate. The reference
+splits contain 58,391 eligible words for blogs and 73,922 for novels, so the
+100,000-token condition is infeasible for both and is omitted.
+Document features are smoothed log rate residuals,
+\begin{equation}
+ r_w(d)=\log\frac{c_w(d)+\alpha q(w)}{N_d+\alpha}-\log q(w),
+\end{equation}
+where $N_d$ is the document length. I use mean absolute distance from each
+query to every reference. The primary metric is global pairwise AUC, with
+top-one accuracy as a descriptive measure. Empirical, LM, and hybrid methods
+share each vocabulary and distance rule. Smoothing $\alpha$ and hybrid $\beta$
+are selected by leave-one-reference-out attribution among training authors.
+Burrows's Delta is included as a full-data reference baseline.
+
+\paragraph{Retrieval.} I evaluate SciFact and NFCorpus from the BEIR archives.
+Document counts are drawn uniformly without replacement at the same three
+budgets and seeds, or use the full corpus. For each query, I rank all
+documents by the query log likelihood under a Dirichlet-smoothed document
+model with $q$ as its background distribution:
+\begin{align}
+ P(w\mid d)&=\frac{c(w,d)+\mu q(w)}{|d|+\mu},\\
+ s(q,d)&=\sum_{w\in V}c(w,q)\log P(w\mid d).
+\end{align}
+The Dirichlet mass $\mu$ and hybrid $\beta$ are tuned on the collection's
+development judgments. Test metrics are nDCG@10 and MAP@100.
+
+I also report the standard baselines. These are full-index Dirichlet query
+likelihood with the collection background, Jelinek-Mercer collection
+smoothing, and BM25, together with uniform and additive smoothing and an
+empirical WikiText background mixed with collection frequencies. The
+smoothing parameters of the Dirichlet, Jelinek-Mercer, uniform, additive, and
+WikiText-mix methods, and the hybrid's $\mu$ and $\beta$, are selected on
+development judgments. BM25 uses fixed $k_1=1.2$ and $b=0.75$ and was not
+tuned. This difference favors the hybrid. All methods use the same official
+test queries. The 1,000-token background setting is artificial. Query likelihood
+already reads the full collection to build document models, so in practice
+the background comes from the full collection for free. The sampled budgets
+isolate how a prior behaves when counts are scarce, and the standard
+baselines show what a practitioner would actually use. Their
+separate family of 40 contrasts is labeled exploratory. A separate paired test compares saved BM25
+rankings with the 1,000-token hybrid on the same queries. It uses 10,000
+paired query bootstrap resamples and a 10,000-sample two-sided sign-flip test,
+with Holm correction over the two collections. I checked the five
+selected controls with \texttt{ir-measures} 0.4.3 \citep{macavaney2022irmeasures}
+from saved rankings. All 12,460 per-query metric values agreed within
+$2.22\times10^{-16}$ using linear-gain nDCG and the saved rank order for ties.
+
+\paragraph{Lexical distinctiveness.} I compare the adult Student and
+Technology job-label groups in the Blog Authorship Corpus. Reference,
+development, and test authors are disjoint. After short-reference filtering,
+the reference split contains 72 Student and 76 Technology authors, with 40
+development and 40 test authors. For each reference-token budget and seed,
+informative Dirichlet log odds with prior mass 1,000 ranks terms by absolute z
+score. A logistic classifier trained on development authors predicts
+test-author labels from the top 100 terms. Accuracy is primary, with macro-F1
+descriptive.
+
+\paragraph{Next-word prediction.} I use 2,000 held-out adjacent-word cases from
+public-domain novels, clustered by 20 book authors. Each case contains the true
+next word and four distractors from the same reference-frequency bin.
+Candidate sets are fixed across methods. The LM conditions only on the
+preceding word. I compare it with sampled bigram counts, their hybrid, a
+smoothed bigram backoff, a uniform prior, a full-reference frequency control,
+PMI, and the t-score. The backoff probability is proportional to the observed
+pair count plus 0.5 times the reference unigram probability, divided by the
+pair count total plus 0.5, then normalized over the fixed candidate set.
+Top-one accuracy is primary, with mean reciprocal rank (MRR) descriptive. This
+task is the LM training objective itself. It is not an evaluation against human
+collocation labels.
+
+\paragraph{Spelling correction.} I generate 2,000 single-edit typos per seed
+from held-out novel text, for three seeds. Each candidate list contains the
+intended word and up to 24 words in the fixed training lexicon that are one
+edit from the observed typo. Every prior uses the same candidate list and
+uniform single-edit error channel. I compare top-one accuracy and MRR. This
+controlled check does not measure naturally occurring typos.
+
+\paragraph{Inference.} Retrieval outcomes are first averaged across the three
+reference-sampling seeds for each query. Paired query bootstrap intervals and
+two-sided sign-flip tests then compare methods. To test data scarcity, I also
+compare each LM or hybrid benefit at the smallest and largest feasible sample
+budgets using the same queries or author clusters. Intervals for the new tasks
+resample authors, averaging seed-level outcomes within each author. Their
+paired sign-flip tests use 10,000 samples. Stylometry uncertainty uses 2,000
+author-cluster bootstrap draws, resampling the three reference seeds and author
+clusters, and 10,000 author-cluster sign-flip permutations. Holm correction
+covers the original 50 planned retrieval and stylometry tests plus 12 new-task
+tests. Six post-hoc bigram-control contrasts are also reported, with adjusted
+results across all 68 tests. The separate retrieval-control family contains 40
+exploratory contrasts. I report held-out cross-entropy for each task's own
+probability target, not as a substitute for task performance. Token-level
+cross-entropy is used for stylometry, retrieval, and distinctiveness,
+candidate-conditional cross-entropy for next-word prediction, and
+channel-combined candidate-posterior cross-entropy for spelling.
+
+\section{Experimental Design}
+
+The design changes only the reference prior and its tuned smoothing
+parameters. The task examples, test judgments, query lengths, feature
+vocabularies, and evaluation metrics remain fixed within each comparison.
+Retrieval uses 300 SciFact test queries and 323 NFCorpus test queries. The
+stylometry comparisons use the existing held-out author splits. All language
+model word scores were computed once and reused. Downstream sweeps do not
+rerun the language model.
+
+For retrieval, each combination of collection, token budget, and method is
+evaluated on identical test queries. For stylometry, paired query-reference
+distances are computed from each method's feature representation, and
+uncertainty resamples author clusters to respect shared authors across
+queries and references. The per-query data, seed-level results, test
+statistics, and environment metadata are included with each run.
+
+\section{Results}
+
+\subsection{RQ1: Retrieval}
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{llrrrr}
+\toprule
+ & & \multicolumn{2}{c}{SciFact} & \multicolumn{2}{c}{NFCorpus} \\
+Tokens & Prior & nDCG@10 & MAP@100 & nDCG@10 & MAP@100 \\
+\midrule
+1,000 & Empirical & .599 & .562 & .290 & .130 \\
+      & LM         & .642 & .605 & .306 & .142 \\
+      & Hybrid     & .650 & .612 & .308 & .140 \\
+10,000 & Empirical & .642 & .601 & .299 & .136 \\
+       & LM         & .642 & .605 & .306 & .142 \\
+       & Hybrid     & .631 & .592 & .308 & .141 \\
+100,000 & Empirical & .653 & .609 & .298 & .135 \\
+        & LM         & .642 & .605 & .306 & .142 \\
+        & Hybrid     & .637 & .594 & .299 & .136 \\
+Full & Empirical & .656 & .615 & .300 & .136 \\
+     & LM         & .642 & .605 & .306 & .142 \\
+     & Hybrid     & .656 & .615 & .301 & .137 \\
+\bottomrule
+\end{tabular}
+\caption{Query-likelihood retrieval with each background prior. Mean nDCG@10
+and MAP@100. Sampled-reference results average three seeds. The full reference
+is one fixed estimate. Table~\ref{tab:retrieval-controls} gives the standard
+baselines.}
+\label{tab:retrieval}
+\end{table*}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Method (nDCG@10) & SciFact & NFCorpus \\
+\midrule
+Hybrid prior, 1,000 tokens & .650 & .308 \\
+\midrule
+BM25 & .663 & .305 \\
+Collection Dirichlet & .659 & .298 \\
+Jelinek-Mercer & .657 & .293 \\
+WikiText background mix & .661 & .305 \\
+Uniform Dirichlet & .543 & .279 \\
+Additive uniform & .495 & .278 \\
+\bottomrule
+\end{tabular}
+\caption{Standard retrieval baselines next to the best LM-based result. BM25,
+collection Dirichlet, and Jelinek-Mercer use the full BEIR index. The
+empirical background uses 1,916 WikiText word tokens. These baselines are not
+matched to the 1,000-token sample. A paired test of BM25 against the hybrid
+is not significant on either collection.}
+\label{tab:retrieval-controls}
+\end{table}
+
+The LM prior helps only against a very sparse empirical background. At 1,000
+reference tokens, the hybrid beats empirical counts by .051 nDCG@10 on SciFact
+(.650 versus .599, 95\% paired query CI [.026, .077], adjusted $p=.0068$
+across the 68-test family) and by .018 on NFCorpus (CI [.008, .029], adjusted
+$p=.0312$). Neither pure LM comparison survives correction. At 10,000 tokens
+and above, the hybrid's advantage disappears or reverses. The full-data
+empirical prior reaches .656 on SciFact, above the 1,000-token hybrid.
+
+The standard baselines are as good or better. On SciFact, BM25 reaches .663,
+collection Dirichlet .659, and Jelinek-Mercer .657, all above the hybrid's
+.650. Even a background of 1,916 WikiText tokens mixed with collection
+frequencies reaches .661 and beats the LM hybrid. None of these differences is
+reliable. BM25 minus the hybrid is +.013 nDCG@10 (95\% CI [$-.005$, .032],
+$p=.146$, Holm-adjusted $p=.292$). The collection Dirichlet, Jelinek-Mercer,
+and WikiText-mix differences from the hybrid (+.009, +.007, and +.011) have
+adjusted $p=1.0$ in the 40-contrast control family. On NFCorpus, the hybrid's
+.308 is close to BM25 at .305 (BM25 minus hybrid $-.003$, CI [$-.011$, .005],
+adjusted $p=.465$) and above collection Dirichlet at .298. The collection Dirichlet difference ($-.010$,
+CI [$-.019$, $-.001$]) does not survive correction (adjusted $p=.45$).
+Jelinek-Mercer is lower than the hybrid by .016 (adjusted $p=.036$). Uniform
+and additive smoothing are worse than all other methods on both collections.
+The LM prior is therefore a fix for an artificially starved background, not
+an improvement over standard practice.
+
+The direct scarcity test compares each prior's gain at 1,000 tokens with its
+gain at the largest feasible sampled budget. On SciFact, the LM and hybrid
+gains decline by .054 and .067 nDCG (95\% CIs [.030, .078] and [.043, .092],
+adjusted $p=.0068$ for each). On NFCorpus, the hybrid gain declines by .018
+(CI [.008, .027], adjusted $p=.0165$), while the LM-only decline of .008 is
+uncertain (CI [$-.001$, .017], adjusted $p=1.0$).
+
+Held-out token cross-entropy ranks the priors differently from retrieval. At
+1,000 tokens, LM cross-entropy is 11.82 on SciFact and 12.09 on NFCorpus,
+compared with empirical values of 7.30 and 7.59. The hybrid is intermediate.
+Lower query cross-entropy therefore does not explain the hybrid's retrieval
+gain.
+
+Two further studies test other uses of LM statistics in BM25. LM-derived IDF
+did not improve nDCG@10 over BM25 on SciFact, NFCorpus, or FiQA. Hybrid IDF was
+statistically indistinguishable from BM25 on SciFact and NFCorpus and worse on
+FiQA. Adaptive LM weighting reduced nDCG@10 on all three collections. Each LM
+method beat its formula-matched empirical-prior control, but not BM25. A prior
+can win inside a chosen formula and still lose to the standard ranker. In the
+stop-word study, rank-frequency breakpoints were fitted to collection document
+frequency, token frequency, frozen model probabilities, and external empirical
+frequencies. The maximum of 705 terms was selected for the first three signals
+in every collection, while external empirical frequency selected 305. LM-based
+filtering improved nDCG@10 over document-frequency filtering on all three
+collections, but lost to external empirical filtering and standard BM25 on
+SciFact and FiQA, with no reliable advantage over BM25 on NFCorpus. Some
+filtered queries returned no documents, up to 59 of 323 NFCorpus queries in
+one source-target condition.
+
+\subsection{RQ1: Stylometry and lexical tasks}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{llrrr}
+\toprule
+Corpus & Tokens & Empirical & LM & Hybrid \\
+\midrule
+Blogs & 1,000 & .715 & .716 & .711 \\
+Blogs & 10,000 & .713 & .716 & .711 \\
+Blogs & Full & .712 & .716 & .712 \\
+Novels & 1,000 & .619 & .625 & .625 \\
+Novels & 10,000 & .620 & .625 & .624 \\
+Novels & Full & .620 & .625 & .621 \\
+\bottomrule
+\end{tabular}
+\caption{Global pairwise AUC for stylometric attribution. Sampled results
+average three seeds. No LM or hybrid comparison survives Holm correction
+over the 18 stylometry contrasts.}
+\label{tab:stylometry}
+\end{table}
+
+The planned stylometry family has 18 contrasts: LM minus empirical, hybrid
+minus empirical, and hybrid minus LM, for two corpora at 1,000 tokens, 10,000
+tokens, and full data. Holm correction covers these 18 tests. Neither the LM
+prior nor the hybrid reliably improves over empirical counts. Full-data AUC gains for the LM
+range from .004 to .005, and cluster-bootstrap intervals include zero. Two
+hybrid-minus-empirical differences are nominally significant before
+correction: blogs at 10,000 tokens ($-.001$, $p=.022$, 18-test adjusted
+$p=.40$) and novels at full data (+.001, $p=.037$, 18-test adjusted $p=.64$). Neither survives
+correction, and they point in opposite directions. The 1,000-to-10,000-token stylometry changes are small, and all
+four author-cluster intervals include zero, so the retrieval scarcity pattern
+does not carry over. Top-one attribution is mixed. At full data, the LM scores
+.280 versus .293 for empirical counts on blogs, and .175 versus .150 on novels.
+The hybrid matches the empirical top-one scores on both full-data conditions.
+
+Held-out cross-entropy does not track attribution either. At full reference
+size, cross-entropy for empirical, LM, and hybrid priors is 4.651, 4.933, and
+4.651 on blogs, and 4.678, 4.847, and 4.695 on novels. At 1,000 tokens, the LM
+stays at 4.933 and 4.847, empirical counts give 4.814 and 4.838, and the hybrid
+gives 4.842 and 4.833. The LM prior alone does not improve held-out word
+prediction on these collections.
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Prior & \multicolumn{3}{c}{Distinctiveness} &
+\multicolumn{3}{c}{Next-word prediction} &
+\multicolumn{3}{c}{Spelling correction} \\
+ & 1,000 & 10,000 & 100,000 & 1,000 & 10,000 & 100,000 &
+  1,000 & 10,000 & 100,000 \\
+\midrule
+Empirical & .526 & .535 & .505 & .269 & .359 & .465 & .855 & .897 & .916 \\
+LM & .518 & .503 & .510 & .401 & .401 & .401 & .902 & .902 & .902 \\
+Hybrid & .556 & .545 & .514 & .401 & .403 & .408 & .902 & .909 & .918 \\
+Smoothed bigram & n/a & n/a & n/a & .336 & .418 & .505 & n/a & n/a & n/a \\
+Full frequency & .522 & .526 & .516 & .636 & .636 & .636 & .925 & .925 & .925 \\
+Uniform & .543 & .509 & .497 & .215 & .215 & .215 & .785 & .785 & .785 \\
+\bottomrule
+\end{tabular}
+\caption{Top-one accuracy pooled over items and three reference-sampling
+seeds. Accuracy levels in the text use this pooled estimator. Paired
+differences and their intervals use author-cluster means, so they can differ
+slightly from differences of table values.
+Distinctiveness classifies held-out blog authors from selected terms.
+Next-word prediction and spelling use constructed candidate sets. Next-word
+prediction is the LM training objective. Full-frequency values use all
+training text.}
+\label{tab:extensions}
+\end{table*}
+
+In lexical distinctiveness, the top-100-term classifier does not reliably
+improve over the empirical-prior classifier (Table~\ref{tab:extensions}). At
+1,000 tokens, the LM accuracy difference is $-.012$ (95\% author-cluster CI
+[$-.051$, .030]) and the hybrid difference is .020 (CI [$-.029$, .072]).
+Neither survives correction. The hybrid lowers token cross-entropy from 8.03 to
+7.66 at this budget, so better word prediction again does not give a reliable
+task gain.
+
+Next-word prediction is the language model's training objective, so a gain
+there shows cloze ability and nothing more. At 1,000 tokens, the LM and hybrid
+improve top-one accuracy over sampled pair counts by .131 (95\% author-cluster
+CI [.102, .159], adjusted $p=.0068$). The advantage shrinks with more counts.
+At 100,000 tokens, sampled pair counts reach .465, above the LM at .401 and the
+hybrid at .408, and full-reference frequency reaches .636 at all budgets. In
+the post-hoc comparison with the smoothed bigram, the LM and hybrid lead by
+.065 at 1,000 tokens (CIs [.039, .091], adjusted $p=.0165$), are not reliably
+different at 10,000 tokens, and trail by .104 and .096 at 100,000 tokens (CIs
+[$-.129$, $-.079$] and [$-.120$, $-.073$], adjusted $p=.0068$). PMI and the
+t-score reach .192 and .239 at 1,000 tokens and .337 and .436 at 100,000.
+Empirical candidate cross-entropy is lower than LM cross-entropy at both 1,000
+tokens (1.55 versus 1.70) and 100,000 tokens (1.23 versus 1.70). This task says
+nothing about human collocation judgments.
+
+In synthetic spelling correction, LM and hybrid priors improve top-one
+accuracy over sampled unigram counts at 1,000 tokens by .045 and .046
+(author-cluster means, 95\% CIs [.036, .054] and [.039, .052], adjusted $p=.0068$ for both).
+The gains shrink as counts grow, by .063 for the LM and .044 for the hybrid
+(both adjusted $p=.0068$). At 100,000 tokens, the hybrid is .918 versus .916
+for empirical counts, the LM is .902, and full-reference frequency is .925.
+Typos are generated from the known answer with the same edit channel that
+supplies candidates, so this is a sanity check, not evidence of utility for
+natural spelling errors.
+
+Estimating the retrieval vocabulary's LM prior took 333.6 seconds on Apple
+MPS, once for both collections and all budgets. Downstream scoring, tuning,
+and reporting took 93.1 seconds on CPU. Extension word and pair scores took
+537.7 seconds on an NVIDIA GB10, 591.6 seconds on Apple MPS, and 744.3 seconds
+on an AMD Radeon 8060S, as separate shard runtimes. The ROCm shard overlapped
+with another GPU workload. I did not measure query-time latency.
+
+\subsection{RQ2: Close-language identification}
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{Raw (planned)} & \multicolumn{3}{c}{Dev-calibrated (post hoc)} \\
+System & All four & bos/hrv & ind/zsm & All four & bos/hrv & ind/zsm \\
+\midrule
+Causal model, from scratch & 77.94 & 66.21 & 89.67 & 81.74 & 68.63 & 94.91 \\
+Unigram, same subword tokenizer & 76.24 & 59.88 & 92.59 & 79.72 & 66.11 & 93.33 \\
+UniLID (\texttt{unilid-1940}) & n/a & n/a & 86.31 & n/a & n/a & n/a \\
+fastText lid.176 & 62.99 & 55.53 & 70.55 & 71.20 & 61.81 & 80.68 \\
+GlotLID-M & 82.19 & 70.75 & 93.63 & 86.34 & 76.38 & 96.29 \\
+\midrule
+Character 1-5 gram naive Bayes (post hoc) & 73.07 & 58.55 & 87.60 & 79.27 & 66.35 & 92.24 \\
+\bottomrule
+\end{tabular}
+\caption{FLORES-200 devtest accuracy (\%) on 4,048 full sentences. ``All four''
+is four-way classification. Pair columns restrict the decision to the two
+languages of the pair, for sentences of that pair. The raw evaluation was the
+planned final evaluation. The dev-offset calibration was added afterward, and
+each system's offsets are fitted on the same 3,988 dev sentences. The
+character model was added later still. The released UniLID model has no
+Bosnian or Croatian label and was run uncalibrated on Indonesian/Malay only.
+The causal, unigram, and character models use the same 50 million training
+tokens per language. One training seed.}
+\label{tab:lid}
+\end{table*}
+
+A separate study trained one causal Transformer per language from scratch on
+Bosnian, Croatian, Indonesian, and Malay Wikipedia \citep{wikimedia2023} and
+scored FLORES-200 devtest sentences \citep{nllb2022} (Table~\ref{tab:lid}).
+The matched unigram shares the causal model's 16,000-type subword tokenizer
+and training tokens. The planned comparators were this unigram, fastText
+lid.176, GlotLID-M, and the released UniLID model
+\citep{meister2026unilid}. UniLID's label set covers Indonesian and Malay but
+not Bosnian or Croatian, so it was scored on that pair only, without
+calibration.
+
+The planned raw evaluation is mixed. The causal model reaches 77.94\% overall,
+above the unigram at 76.24\% and below GlotLID-M at 82.19\%. It beats the
+unigram on Bosnian/Croatian by 6.32 points but loses on Indonesian/Malay,
+89.67\% versus 92.59\% ($-2.92$ points, 95\% paired CI [$-4.40$, $-1.43$]).
+On Indonesian/Malay, UniLID reaches 86.31\%, below the causal model, the
+matched unigram, and GlotLID-M.
+
+Two analyses are post hoc. First, after the raw evaluation I fitted additive
+per-language score offsets for each system on FLORES dev and froze them for
+devtest. Second, because the matched unigram can carry the shared tokenizer's
+biases, I added a character 1-5 gram naive Bayes model that uses no subword
+tokenizer. It counts hashed character n-grams ($2^{22}$ buckets per order) in
+the same training tokens, decoded back to text. Its additive smoothing was
+selected on dev from 0.01, 0.1, and 1.0, and its offsets were fitted on the
+same dev split. All intervals below are 95\% paired bootstrap intervals over
+FLORES sentences, without multiplicity correction across the nine calibrated
+contrasts. The bos/hrv lower bounds of 0.20 and 0.40 points are the most
+fragile.
+
+After the post-hoc calibration, the causal model leads the unigram by 2.03
+points overall (CI [0.77, 3.26]) and by 2.52 and 1.58 points on the two pairs.
+It leads the character n-gram model by 2.47 points overall (CI [1.24, 3.71]),
+2.27 on Bosnian/Croatian (CI [0.20, 4.35]), and 2.67 on Indonesian/Malay (CI
+[1.48, 3.90]). The character model does not differ reliably from the subword
+unigram after calibration ($-0.44$ points, CI [$-1.51$, 0.57]). Raw, the
+character model is the weaker of the two (73.07\% versus 76.24\%). Under the
+post-hoc calibration, the contextual gain is not an artifact of the shared
+tokenizer, at least against this simple character baseline.
+
+The released specialist is still better. GlotLID-M leads the causal model by
+4.59 points after calibration (CI [3.36, 5.88]) and by 4.25 points raw, and by
+7.76 points on Bosnian/Croatian after calibration. fastText lid.176 trails all
+other systems. The causal gain is therefore a bounded measurement of context
+value in two close pairs. It does not show that contextual likelihood beats
+strong identifiers, and the models are trained from scratch, so it says
+nothing about pretrained base models. The character baseline is a simple
+hashed naive Bayes model, not a strong system. Its smoothing was selected at
+the edge of its grid, although dev accuracy changed by only 0.33 points across
+the 100-fold range. A tuned character model, such as the SVM and
+logistic-regression systems of the DSL shared tasks, or OpenLID-v3 may score
+higher.
+
+\subsection{RQ3: Existing human-judgment data}
+
+I piloted five tasks. Four came from a screen of 31 candidate tasks, and I
+added EIFFEL beside that screen as a related idiom-completion task. The screen
+dropped candidates without a clear data license, a strong classical baseline,
+or a context-dependent target. The five tasks tested whether probabilities
+from Qwen3.5-2B-Base and Qwen3.5-4B-Base \citep{qwen35} add predictive value
+beyond classical features.
+Each analysis is five-fold cross-validation, grouped by verb, expression,
+prompt, or target. DAIS, EIFFEL, and MERLIN use all labeled items. SWORDS uses
+100 of its 762 test targets, and the idiomaticity pilot uses a 2,000-row
+sample. The same folds were used to select the pilots, so no independent
+confirmatory split remains. A Holm correction over the five candidates keeps
+the three positive results (adjusted $p\le.001$, the floor of 10,000
+bootstrap resamples). For DAIS, this gate is
+the post-hoc additive gate described below. With 31 screened candidates, a
+correction over only the five piloted tasks understates the selection.
+
+The DAIS dative-preference task \citep{hawkins2020dais} first failed its
+registered test. Hawkins et al.\ introduced DAIS and showed that neural
+language-model probabilities predict human dative preferences. My registered
+pilot asked whether boundary-corrected whole-word scores alone track the
+human preference better than the strongest classical model. They did not. The
+held-out-verb Spearman correlation was .527 for the 2B model and .474 for the
+4B model, against .627 for the feature baseline (differences $-.100$ and
+$-.153$, verb-cluster CIs [$-.142$, $-.058$] and [$-.198$, $-.108$]). After
+this failure, I changed the success criterion to an additive test. That change
+is post hoc. In the additive test, the same saved scores reduced
+verb-held-out MSE beyond a 5-gram and feature model by 8.87\% (2B) and 8.44\%
+(4B). The target is a continuous preference from 0 to 100. The additive
+result is consistent with Hawkins et al.\ and is a replication under a
+post-hoc criterion, not a new human-judgment finding.
+
+EIFFEL \citep{eiffel} asks for the intended completion of a French idiom.
+Adding LM scores reduced log loss by 9.46\% (2B) and 20.81\% (4B) beyond
+character and word n-gram features. Idiom completion is a cloze task, which is
+the language-modeling objective, and surprisal already explains part of the
+human idiom processing advantage \citep{socolof2025idiom}. The gain shows
+cloze ability, not linguistic utility beyond that objective. MERLIN
+\citep{merlin2014} German learner proficiency is less directly aligned with
+the objective. Mean corrected surprisal reduced CEFR prediction MAE by
+16.32\% and 17.16\% beyond word and character n-grams. Its cluster bootstrap
+resamples only 16 exam-prompt clusters, so its intervals may understate
+variation across prompts. This result is not new. GPT perplexity already
+tracks CEFR level in Swedish learner essays \citep{munozsanchez2024perplexity},
+and perplexity features from LLMs already serve as CEFR classifiers across
+learner corpora \citep{stearns2026cefr}. My pilot extends that idea to German
+MERLIN texts with an additive test against n-gram features. It is not a
+training-objective result and not a Hawkins et al.\ replication.
+
+The full-context SWORDS lexical-substitution pilot \citep{lee2021swords} and
+the French Lexical Network idiomaticity-class pilot \citep{liu2024idiom} did
+not pass. SWORDS was first scored from left context only, while
+the human judgments and the classical baseline used the full context. I
+rescored the same 100 of 762 target contexts with the full context, and that
+rescored version is the one reported. It has too little power for the planned
+effect on the full test. The first idiomaticity scoring run stopped at a sentence-initial target,
+which a causal model cannot score. I restricted the sample to targets with
+preceding context and rescored it. The pilot used a balanced
+2,000-item sample and showed no reliable additive value. Its labels are the
+four expert lexicon classes of the French Lexical Network, not human
+judgments. The three positive
+and two negative pilots are separate task-specific results, not a general
+claim that pretrained probabilities improve prediction of human judgments.
+
+\subsection{Task-trained models and lexical laws}
+
+A matched-pretraining study compared standard training (A), linguistically
+curated training (B), and curated training with a pair-ranking objective (C)
+on one compact GPT-2 model with one training seed. All three used 24,462
+updates from a shared initialization. I do not report its effects. The file
+of paired effects was lost, and the saved checkpoints have not been rescored.
+This paper makes no claim from this study.
+
+A descriptive study compared frozen whole-word probabilities from DistilGPT-2
+and GPT-2 \citep{radford2019gpt2} with human frequencies, and measured Zipf
+fits, Heaps vocabulary growth, and Taylor burstiness in held-out human text and
+generated samples from WikiText-2 and Project Gutenberg domains. A
+100-replicate bootstrap rejected the pure Zipf model at $p=.0099$, the
+smallest value 100 replicates can give, for all 14
+human and generated count distributions. Human held-out Heaps exponents were
+.734 for Wikipedia and .664 for Gutenberg. At a fixed 20,000-word generation
+budget, generated samples contained 285 to 13,201 types. Temperature 1.0 had
+the lowest Jensen-Shannon divergence from human text in all four model-domain
+pairs. Human Taylor exponents ranged from 1.00 to 1.11, and generated
+exponents from .97 to 1.51. Earlier work already measured these laws in
+neural and LLM text, including temperature effects
+\citep{takahashi2017neural,takahashi2019scaling,mikhaylovskiy2025zipf}. These
+numbers describe two English domains and two GPT-2-family models. They are not
+new laws, and they do not show that either distribution is a better baseline
+for any task.
+
+\section{Analysis}
+
+The evidence supports a narrow conclusion. A frozen LM word distribution
+repairs an artificially starved retrieval background, but it does not beat BM25 or
+collection Dirichlet smoothing on SciFact, and it is only close to BM25 on
+NFCorpus. It gives no reliable gain in stylometry or distinctive-term
+classification, and LM-derived IDF and stop words do not beat BM25. In
+language identification, context helps beyond a matched unigram and a simple
+character model only after post-hoc calibration, and a released identifier is
+better in both the raw and the calibrated analysis.
+
+The clearest positive results come from tasks that match the language-modeling
+objective: next-word prediction and idiom completion. These show that a language model predicts held-out words
+well. They do not show that its probabilities measure anything beyond that.
+The dative result repeats a known finding. MERLIN is the one positive pilot
+that is less tied to the objective. It has only 16 prompt clusters, and prior
+work already links perplexity to CEFR level.
+
+Predictive fit and instrument utility also diverge. Lower held-out
+cross-entropy did not explain the retrieval gain, did not track stylometric
+AUC, and did not give a reliable distinctiveness gain. Predictability, rarity,
+retrieval relevance, and burstiness are related but different quantities. A
+model can estimate one well without being a good proxy for the others.
+
+\section{Conclusion}
+
+Across these studies, language-model distributions sometimes improve a defined
+comparison, but the gains depend on task, data budget, and training objective.
+In retrieval, the gain holds only against a background from 1,000 sampled
+tokens, and the standard baselines remain as good or better. In close-language
+identification, a contextual model beats a matched unigram and a character
+n-gram model after post-hoc calibration, but GlotLID-M is better. The positive human-judgment results
+align with the cloze objective or repeat prior work. Each language-model distribution
+is a candidate measurement whose value must be shown against a task-matched
+baseline. The evidence does not support it as a general replacement for corpus
+statistics.
+
+\section{Limitations}
+
+The studies do not form one matched experiment. The pretrained-prior
+evaluations mostly use one frozen DistilGPT-2 checkpoint and 32 WikiText-103
+contexts, the lexical-law study uses two GPT-2-family checkpoints, and the
+language-identification study
+has one training seed and four close languages. The human-judgment pilots use
+different datasets and cross-validation folds that also selected the pilots,
+with no independent confirmatory split. These differences prevent a pooled
+estimate and limit transfer across model families and tasks.
+
+The retrieval evidence covers two collections for the prior comparison and
+three for the BM25 studies. It does not compare with neural rankers such as
+SPLADE or LLM query-likelihood models. The sampled-budget setting is artificial
+for query likelihood, which already reads the full collection. The hybrid and
+Dirichlet parameters are chosen on small development sets, while BM25 keeps
+its default $k_1=1.2$ and $b=0.75$. A tuned BM25 could score higher.
+
+The character n-gram baseline is one simple hashed naive Bayes model with
+three smoothing values, and the selected value lies at the grid edge. It is a
+control for the tokenizer, not the strongest character model. The
+language-identification calibration and the character control were both added
+after the raw evaluation, so they are post hoc. UniLID covers only one of the
+two pairs, and OpenLID was not run. The blog job
+labels are coarse. Task and domain vary together across datasets, so the
+cross-task differences do not identify domain-shift effects. The next-word
+task has no human collocation labels. Spelling uses synthetic single-edit
+errors and a uniform channel. The two novel tasks have 20 author clusters.
+Tests account for query and author clustering and planned comparisons, but not
+for unmeasured models, datasets, or evaluation choices.
+
+\bibliography{references}
+\end{document}

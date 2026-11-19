@@ -1,0 +1,10 @@
+*
+!.gitignore
+!README.md
+!BUILD.md
+!distributional_baselines.tex
+!references.bib
+!style/
+!style/*.sty
+!style/*.bst
+!Language-Model Distributions as Tools for Computational Linguistics.pdf
